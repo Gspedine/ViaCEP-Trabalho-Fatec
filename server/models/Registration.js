@@ -10,7 +10,9 @@ const registrationSchema = new mongoose.Schema({
   complemento: { type: String, default: '' },
   bairro: { type: String, required: true },
   localidade: { type: String, required: true },
-  uf: { type: String, required: true }
+  uf: { type: String, required: true },
+  ownerId: { type: String, required: true },
+  ownerName: { type: String, required: true }
 }, { timestamps: true })
 
 export default mongoose.model('Registration', registrationSchema)

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url'
 import sqlite3 from 'sqlite3'
 import { open } from 'sqlite'
 import Registration from './models/Registration.js'
+import User from './models/User.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const sqliteFile = path.join(__dirname, 'data', 'db.sqlite')
@@ -43,6 +44,15 @@ async function initializeSqlite() {
     driver: sqlite3Driver.Database
   })
   await sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      passwordHash TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    )
+  `)
+  await sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS registrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       nome TEXT NOT NULL,
@@ -55,6 +65,8 @@ async function initializeSqlite() {
       bairro TEXT NOT NULL,
       localidade TEXT NOT NULL,
       uf TEXT NOT NULL,
+      ownerId TEXT NOT NULL,
+      ownerName TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )
@@ -62,21 +74,23 @@ async function initializeSqlite() {
 }
 
 const mongoStorage = {
-  list: async () => Registration.find().sort({ createdAt: -1 }).lean(),
-  getById: async (id) => Registration.findById(id).lean(),
+  list: async (userId) => Registration.find({ ownerId: userId }).sort({ createdAt: -1 }).lean(),
+  getById: async (id, userId) => Registration.findOne({ _id: id, ownerId: userId }).lean(),
   create: async (payload) => Registration.create(payload),
-  update: async (id, payload) => Registration.findByIdAndUpdate(id, payload, { new: true, runValidators: true }).lean(),
-  remove: async (id) => Registration.findByIdAndDelete(id)
+  update: async (id, payload, userId) => Registration.findOneAndUpdate({ _id: id, ownerId: userId }, payload, { new: true, runValidators: true }).lean(),
+  remove: async (id, userId) => Registration.findOneAndDelete({ _id: id, ownerId: userId }),
+  findUserByUsername: async (username) => User.findOne({ username }).lean(),
+  createUser: async (user) => User.create(user)
 }
 
 const sqliteStorage = {
-  list: async () => sqliteDb.all('SELECT * FROM registrations ORDER BY datetime(createdAt) DESC'),
-  getById: async (id) => sqliteDb.get('SELECT * FROM registrations WHERE id = ?', id),
+  list: async (userId) => sqliteDb.all('SELECT * FROM registrations WHERE ownerId = ? ORDER BY datetime(createdAt) DESC', userId),
+  getById: async (id, userId) => sqliteDb.get('SELECT * FROM registrations WHERE id = ? AND ownerId = ?', id, userId),
   create: async (payload) => {
     const now = new Date().toISOString()
     const result = await sqliteDb.run(
-      `INSERT INTO registrations (nome, cpf, email, cep, logradouro, numero, complemento, bairro, localidade, uf, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO registrations (nome, cpf, email, cep, logradouro, numero, complemento, bairro, localidade, uf, ownerId, ownerName, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       payload.nome,
       payload.cpf,
       payload.email,
@@ -87,16 +101,18 @@ const sqliteStorage = {
       payload.bairro,
       payload.localidade,
       payload.uf,
+      payload.ownerId,
+      payload.ownerName,
       now,
       now
     )
     return { id: result.lastID, ...payload, createdAt: now, updatedAt: now }
   },
-  update: async (id, payload) => {
+  update: async (id, payload, userId) => {
     const now = new Date().toISOString()
     const result = await sqliteDb.run(
-      `UPDATE registrations SET nome = ?, cpf = ?, email = ?, cep = ?, logradouro = ?, numero = ?, complemento = ?, bairro = ?, localidade = ?, uf = ?, updatedAt = ?
-       WHERE id = ?`,
+      `UPDATE registrations SET nome = ?, cpf = ?, email = ?, cep = ?, logradouro = ?, numero = ?, complemento = ?, bairro = ?, localidade = ?, uf = ?, ownerName = ?, updatedAt = ?
+       WHERE id = ? AND ownerId = ?`,
       payload.nome,
       payload.cpf,
       payload.email,
@@ -107,15 +123,30 @@ const sqliteStorage = {
       payload.bairro,
       payload.localidade,
       payload.uf,
+      payload.ownerName,
       now,
-      id
+      id,
+      userId
     )
     if (result.changes === 0) {
       return null
     }
-    return sqliteDb.get('SELECT * FROM registrations WHERE id = ?', id)
+    return sqliteDb.get('SELECT * FROM registrations WHERE id = ? AND ownerId = ?', id, userId)
   },
-  remove: async (id) => sqliteDb.run('DELETE FROM registrations WHERE id = ?', id)
+  remove: async (id, userId) => sqliteDb.run('DELETE FROM registrations WHERE id = ? AND ownerId = ?', id, userId),
+  findUserByUsername: async (username) => sqliteDb.get('SELECT * FROM users WHERE username = ?', username),
+  createUser: async (user) => {
+    const now = new Date().toISOString()
+    const result = await sqliteDb.run(
+      `INSERT INTO users (username, passwordHash, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?)`,
+      user.username,
+      user.passwordHash,
+      now,
+      now
+    )
+    return { id: result.lastID, username: user.username, createdAt: now, updatedAt: now }
+  }
 }
 
 const storageMap = {
@@ -124,6 +155,10 @@ const storageMap = {
 }
 
 export function getStorage(type) {
+  return storageMap[normalizeDbType(type)]
+}
+
+export function getAuthStorage(type) {
   return storageMap[normalizeDbType(type)]
 }
 
